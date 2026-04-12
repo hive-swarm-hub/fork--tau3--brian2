@@ -576,6 +576,82 @@ def test_gate_enum_prevalidation_no_constraints_no_block():
     assert_eq(len(out.tool_calls or []), 1, "unconstrained tool passes through")
 
 
+def test_account_class_map_mined_from_kb():
+    section("test_account_class_map_mined_from_kb — Intervention I module-load")
+    from agent import _ACCOUNT_CLASS_MAP
+    assert len(_ACCOUNT_CLASS_MAP) > 0, "map populated"
+    # Spot-check: task_058 expects savings+"Silver Account"; task_075 expects
+    # checking+"Green Fee-Free Account". Both must be in the mined map.
+    assert "Silver Account" in _ACCOUNT_CLASS_MAP.get("savings", []), "task_058 value present"
+    assert "Green Fee-Free Account" in _ACCOUNT_CLASS_MAP.get("checking", []), "task_075 value present"
+    # Bare "Green Account" must work for both checking and savings (tasks use
+    # the bare form; docs use a parenthetical disambiguator).
+    assert "Green Account" in _ACCOUNT_CLASS_MAP.get("checking", []), "bare Green Account in checking"
+    assert "Green Account" in _ACCOUNT_CLASS_MAP.get("savings", []), "bare Green Account in savings"
+    # business_savings trailing-Account variant: task_056 uses "Silver Plus Saver Account"
+    assert "Silver Plus Saver Account" in _ACCOUNT_CLASS_MAP.get("business_savings", []), "task_056 value present"
+    print(f"  map sizes: {[(k, len(v)) for k, v in _ACCOUNT_CLASS_MAP.items()]}")
+    global PASSED; PASSED += 1
+
+
+def test_gate_blocks_invalid_account_class_for_checking():
+    section("test_gate_blocks_invalid_account_class_for_checking — Intervention I gate")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    agent._task_state["unlocked_for_agent"].add("open_bank_account_4821")
+    # task_075 pattern: LLM guesses "World Blue Account" (actually a
+    # business_checking class) for a personal checking account.
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "open_bank_account_4821",
+            "arguments": '{"account_class":"World Blue Account","account_type":"checking","user_id":"u1"}',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    assert_eq(out.tool_calls, None, "wrong-class-for-type call dropped")
+    assert_contains(out.content, "account_class", "correction names account_class")
+    assert_contains(out.content, "Green Fee-Free Account", "correction lists the valid values including task_075's expected")
+    enum_blocks = [i for i in agent._task_state["gate_interventions"]
+                   if i.get("reason") == "blocked_enum_violation"]
+    assert_eq(len(enum_blocks), 1, "one enum violation fired")
+
+
+def test_gate_allows_valid_kb_mined_account_class():
+    section("test_gate_allows_valid_kb_mined_account_class")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    agent._task_state["unlocked_for_agent"].add("open_bank_account_4821")
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "open_bank_account_4821",
+            "arguments": '{"account_class":"Silver Account","account_type":"savings","user_id":"u1"}',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    assert_eq(len(out.tool_calls or []), 1, "KB-mined valid value passes through")
+
+
+def test_gate_allows_bare_green_account_variant():
+    section("test_gate_allows_bare_green_account_variant — no regression on ambiguous name")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    agent._task_state["unlocked_for_agent"].add("open_bank_account_4821")
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "open_bank_account_4821",
+            "arguments": '{"account_class":"Green Account","account_type":"savings","user_id":"u1"}',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    assert_eq(len(out.tool_calls or []), 1, "bare Green Account accepted for savings (task ground truth form)")
+
+
+def test_prompt_includes_kb_mined_account_class_section():
+    section("test_prompt_includes_kb_mined_account_class_section")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    sp = agent.system_prompt
+    assert "Silver Account" in sp, "mined values in prompt"
+    assert "Green Fee-Free Account" in sp, "task_075 value in prompt"
+    assert "account_type=\"checking\"" in sp, "per-account-type grouping in prompt"
+
+
 def test_gate_enum_prevalidation_handles_bad_json():
     section("test_gate_enum_prevalidation_handles_bad_json")
     agent = create_custom_agent(tools=[], domain_policy="test")
@@ -981,6 +1057,12 @@ def main():
     test_gate_enum_prevalidation_allows_valid_enum()
     test_gate_enum_prevalidation_no_constraints_no_block()
     test_gate_enum_prevalidation_handles_bad_json()
+    # brian2 Intervention I: KB-mined account_class validation
+    test_account_class_map_mined_from_kb()
+    test_gate_blocks_invalid_account_class_for_checking()
+    test_gate_allows_valid_kb_mined_account_class()
+    test_gate_allows_bare_green_account_variant()
+    test_prompt_includes_kb_mined_account_class_section()
     test_gate_post_give_tells_customer_args()
     test_gate_post_give_generic_when_no_txns_cached()
     test_annotator_user_side_tool_required_note()

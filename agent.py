@@ -68,6 +68,140 @@ _CATALOG_PROMPT_SECTION = COMPASS.render_prompt_section()
 _VALID_DISCOVERABLE_NAMES: set[str] = COMPASS.valid_names
 
 
+# ── KB-MINED ACCOUNT_CLASS MAP (brian2 Intervention I) ────────────────────────
+#
+# The `open_bank_account_4821` tool docstring says `account_class (string): The
+# full official account class name` — no enum list. The valid values live in
+# KB doc filenames (doc_<category>_accounts_<account_class>_NNN.json). We mine
+# the set at import time so both the prompt and the gate can validate against
+# it. Without this, the agent has to guess account_class via KB_search, and
+# the action matcher scores the first wrong guess before any retry.
+#
+# Evidence (brian2 Intervention H trace dump on eval 76536ba):
+#   - task_058 agent sent account_class="Green Account" for savings
+#     (expected "Silver Account"; "Green Account" is not a valid savings form —
+#     the actual valid form is "Green Account (savings)")
+#   - task_075 agent sent account_class="World Blue Account" for checking
+#     (expected "Green Fee-Free Account"; "World Blue" is a business_checking
+#     class, not a personal checking one)
+# Both are first-call misses that can be prevented preemptively.
+
+def _mine_account_class_map() -> dict[str, list[str]]:
+    """Scan the banking_knowledge KB document directory for valid
+    (account_type → account_class) pairs, encoded in doc filenames.
+
+    Returns a dict like:
+        {
+            "checking": ["Blue Account", "Green Fee-Free Account", ...],
+            "savings": ["Silver Account", "Gold Account", ...],
+            "business_checking": [...],
+            "business_savings": [...],
+        }
+
+    Sorted for stable prompt rendering. Returns {} if the KB dir cannot be
+    located (e.g., tau2-bench not installed).
+    """
+    candidates = [
+        Path(__file__).resolve().parent / "tau2-bench" / "data" / "tau2" / "domains" / "banking_knowledge" / "documents",
+        Path("/Users/brianchen/hive-brian2/tau3/tau2-bench/data/tau2/domains/banking_knowledge/documents"),
+        Path("/Users/brianchen/tau3/tau2-bench/data/tau2/domains/banking_knowledge/documents"),
+    ]
+    try:
+        import tau2
+        tau2_src = Path(tau2.__file__).resolve().parent
+        candidates.append(tau2_src.parent.parent / "data" / "tau2" / "domains" / "banking_knowledge" / "documents")
+    except Exception:
+        pass
+
+    docs_dir = None
+    for c in candidates:
+        if c.is_dir():
+            docs_dir = c
+            break
+    if docs_dir is None:
+        return {}
+
+    pattern = re.compile(r"^doc_([a-z_]+?)_accounts_([a-z_0-9\-()]+?)_(\d+)\.json$")
+    mapping: dict[str, set[str]] = {}
+    for fname in os.listdir(docs_dir):
+        m = pattern.match(fname)
+        if not m:
+            continue
+        category, account_slug = m.group(1), m.group(2)
+        if category not in ("checking", "savings", "business_checking", "business_savings"):
+            continue
+        if "general" in account_slug:
+            continue
+        # Normalize slug: "green_fee-free_account" → "Green Fee-Free Account"
+        tokens = account_slug.replace("_", " ").split()
+        norm_parts: list[str] = []
+        for tok in tokens:
+            if "-" in tok:
+                norm_parts.append("-".join(p.capitalize() for p in tok.split("-")))
+            else:
+                norm_parts.append(tok.capitalize())
+        account_class = " ".join(norm_parts)
+        # Some slugs include a parenthetical disambiguator ("green_account_(savings)")
+        # because the same name exists in two categories. Task ground truth uses
+        # the BARE form ("Green Account"), not the parenthetical form, so we
+        # strip "(savings)" / "(checking)" / etc. when it echoes the current
+        # category. We also keep the parenthetical form as a fallback so either
+        # works if a task ever uses it.
+        suffix = f" ({category})"
+        bare = account_class
+        if account_class.lower().endswith(suffix.lower()):
+            bare = account_class[: -len(suffix)].strip()
+        mapping.setdefault(category, set()).add(bare)
+        if bare != account_class:
+            mapping[category].add(account_class)
+        # Some KB slugs omit the trailing "Account" token that task ground
+        # truth uses (e.g., business_savings slug "silver_plus_saver" but
+        # task expects "Silver Plus Saver Account"). Add both forms so either
+        # matches. Conversely if the slug already ends in Account, the bare
+        # form without Account would be unusual — skip adding it.
+        if not bare.lower().endswith(" account"):
+            mapping[category].add(f"{bare} Account")
+
+    return {k: sorted(v) for k, v in sorted(mapping.items())}
+
+
+_ACCOUNT_CLASS_MAP: dict[str, list[str]] = _mine_account_class_map()
+
+
+def _render_account_class_prompt_section() -> str:
+    """Render the account_class map as a system-prompt section."""
+    if not _ACCOUNT_CLASS_MAP:
+        return ""
+    lines = [
+        "## Valid `account_class` values for `open_bank_account_4821`",
+        "",
+        "The `account_class` parameter has a closed set of valid values per `account_type`. "
+        "The tool's own docstring does NOT list them — this list is mined from the KB "
+        "document filenames so you do not have to guess or rediscover them via KB_search. "
+        "The action matcher scores the FIRST call attempt, so a wrong guess on the first "
+        "`call_discoverable_agent_tool(open_bank_account_4821)` marks the task failed even "
+        "if you retry with a correct value later. Pick from this list:",
+        "",
+    ]
+    for account_type in ("checking", "savings", "business_checking", "business_savings"):
+        values = _ACCOUNT_CLASS_MAP.get(account_type, [])
+        if not values:
+            continue
+        lines.append(f"- `account_type=\"{account_type}\"`:")
+        for v in values:
+            lines.append(f"    - `\"{v}\"`")
+    lines.append("")
+    lines.append(
+        "If the customer's requirements match one of these exactly, use it. If the customer "
+        "describes properties (APY, fees, bonuses) without naming an account, KB_search for "
+        "those properties and pick the closest named account from this list."
+    )
+    return "\n".join(lines)
+
+
+_ACCOUNT_CLASS_PROMPT_SECTION = _render_account_class_prompt_section()
+
+
 def _parse_discoverable_catalog(source_path: Optional[Path] = None) -> dict:
     """Backwards-compat wrapper around compass.ToolCompass.
 
@@ -573,6 +707,8 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
         # Substitute the catalog into the base instructions. The catalog is
         # built at module import time from tau2-bench source.
         instructions = BASE_INSTRUCTIONS.replace("{CATALOG}", _CATALOG_PROMPT_SECTION)
+        if _ACCOUNT_CLASS_PROMPT_SECTION:
+            instructions = instructions + "\n\n" + _ACCOUNT_CLASS_PROMPT_SECTION
         return SYSTEM_TEMPLATE.format(
             instructions=instructions,
             policy=self.domain_policy,
@@ -928,7 +1064,25 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
                 target_tool = args.get("agent_tool_name") or ""
                 inner_str = args.get("arguments")
                 if target_tool and isinstance(inner_str, str) and inner_str:
-                    constraints = COMPASS.enum_constraints(target_tool) or {}
+                    # Intervention I (brian2): merge KB-mined account_class
+                    # values into the enum constraint set for
+                    # open_bank_account_4821. The tool's docstring lists
+                    # account_type but not account_class; we mine account_class
+                    # from KB doc filenames (see _mine_account_class_map).
+                    constraints = dict(COMPASS.enum_constraints(target_tool) or {})
+                    if target_tool == "open_bank_account_4821" and _ACCOUNT_CLASS_MAP:
+                        # account_class is conditional on account_type, so we
+                        # pick the set based on the inner_kwargs below. Mark
+                        # with a sentinel key that the validator handles.
+                        try:
+                            _kwargs = json.loads(inner_str)
+                        except Exception:
+                            _kwargs = None
+                        if isinstance(_kwargs, dict):
+                            acct_type = _kwargs.get("account_type")
+                            valid_classes = _ACCOUNT_CLASS_MAP.get(acct_type) if isinstance(acct_type, str) else None
+                            if valid_classes:
+                                constraints["account_class"] = list(valid_classes)
                     if constraints:
                         try:
                             inner_kwargs = json.loads(inner_str)

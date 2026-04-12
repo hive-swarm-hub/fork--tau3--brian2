@@ -518,6 +518,82 @@ def test_gate_phase2_guard_allows_after_user_call():
     assert_eq(len(out.tool_calls or []), 1, "cleanup passes when user has called the tool")
 
 
+def test_gate_enum_prevalidation_drops_invalid_account_type():
+    section("test_gate_enum_prevalidation_drops_invalid_account_type — intervention H")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    # open_bank_account_4821 is unlocked, and LLM calls it with a wrong
+    # account_type enum value ("premium" is not one of the valid values).
+    agent._task_state["unlocked_for_agent"].add("open_bank_account_4821")
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "open_bank_account_4821",
+            "arguments": '{"account_type":"premium","user_id":"u_1"}',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    assert_eq(out.tool_calls, None, "invalid enum call dropped")
+    assert_contains(out.content, "account_type", "drop note names parameter")
+    assert_contains(out.content, "checking", "drop note lists valid enum value")
+    interventions = agent._task_state["gate_interventions"]
+    enum_blocks = [i for i in interventions if i.get("reason") == "blocked_enum_violation"]
+    assert_eq(len(enum_blocks), 1, "exactly one enum violation intervention")
+    assert_eq(enum_blocks[0]["target"], "open_bank_account_4821", "target tool recorded")
+    assert_eq(len(enum_blocks[0]["violations"]), 1, "one violation recorded")
+    assert_eq(enum_blocks[0]["violations"][0]["param"], "account_type", "param name recorded")
+    assert_eq(enum_blocks[0]["violations"][0]["got"], "premium", "wrong value recorded")
+
+
+def test_gate_enum_prevalidation_allows_valid_enum():
+    section("test_gate_enum_prevalidation_allows_valid_enum")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    agent._task_state["unlocked_for_agent"].add("open_bank_account_4821")
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "open_bank_account_4821",
+            "arguments": '{"account_type":"checking","user_id":"u_1"}',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    assert_eq(len(out.tool_calls or []), 1, "valid enum call passes through")
+    interventions = agent._task_state.get("gate_interventions", [])
+    enum_blocks = [i for i in interventions if i.get("reason") == "blocked_enum_violation"]
+    assert_eq(len(enum_blocks), 0, "no enum-violation intervention fires")
+
+
+def test_gate_enum_prevalidation_no_constraints_no_block():
+    section("test_gate_enum_prevalidation_no_constraints_no_block")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    # submit_cash_back_dispute_0589 has no enum-constrained params per compass.
+    # Its call should pass the enum gate regardless of argument values.
+    agent._task_state["unlocked_for_agent"].add("submit_cash_back_dispute_0589")
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "submit_cash_back_dispute_0589",
+            "arguments": '{"user_id":"u_1","transaction_id":"txn_abc"}',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    assert_eq(len(out.tool_calls or []), 1, "unconstrained tool passes through")
+
+
+def test_gate_enum_prevalidation_handles_bad_json():
+    section("test_gate_enum_prevalidation_handles_bad_json")
+    agent = create_custom_agent(tools=[], domain_policy="test")
+    agent._task_state["unlocked_for_agent"].add("open_bank_account_4821")
+    # Malformed inner JSON — gate must not crash. The canonicalization
+    # intervention upstream should have normalized this in real runs, but
+    # we defend against it here in case it escapes.
+    msg = AssistantMessage(role="assistant", content="", tool_calls=[
+        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
+            "agent_tool_name": "open_bank_account_4821",
+            "arguments": 'not-valid-json',
+        }),
+    ])
+    out = agent._gate_tool_calls(msg)
+    # Call survives — we can't validate what we can't parse.
+    assert_eq(len(out.tool_calls or []), 1, "bad JSON falls through without crash")
+
+
 def test_gate_phase2_guard_no_pairing_no_block():
     section("test_gate_phase2_guard_no_pairing — unrelated cleanup not blocked")
     agent = create_custom_agent(tools=[], domain_policy="test")
@@ -900,6 +976,11 @@ def main():
     test_gate_phase2_guard_blocks_premature_cleanup()
     test_gate_phase2_guard_allows_after_user_call()
     test_gate_phase2_guard_no_pairing_no_block()
+    # brian2 Intervention H: enum pre-validation
+    test_gate_enum_prevalidation_drops_invalid_account_type()
+    test_gate_enum_prevalidation_allows_valid_enum()
+    test_gate_enum_prevalidation_no_constraints_no_block()
+    test_gate_enum_prevalidation_handles_bad_json()
     test_gate_post_give_tells_customer_args()
     test_gate_post_give_generic_when_no_txns_cached()
     test_annotator_user_side_tool_required_note()

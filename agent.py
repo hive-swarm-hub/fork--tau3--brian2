@@ -907,6 +907,68 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
                             "target": args.get("agent_tool_name") or args.get("discoverable_tool_name") or "?",
                         })
 
+            # Intervention H (brian2): gate-level enum pre-validation for
+            # call_discoverable_agent_tool. τ²-bench's action matcher scores
+            # the FIRST call attempt against the oracle — if the agent guesses
+            # a wrong enum value (e.g. account_class="Diamond Elite" vs
+            # expected "Silver Account") and only retries with the correct
+            # value later, the task is already marked failed on the first
+            # (wrong) call even though the retry succeeds. @brian identified
+            # this pattern on task_058/task_075 in his P4 re-classification
+            # of junjie's 9/97 baseline.
+            #
+            # compass.enum_constraints(tool) parses the tool's docstring for
+            # "one of ..." clauses and returns {param: [valid_values]}. When
+            # the LLM's proposed arguments contain an out-of-set enum value
+            # for a constrained parameter, we drop the call and inject a
+            # correction note naming the parameter and listing the valid
+            # values. The LLM then reissues the call with a correct value
+            # BEFORE the oracle ever sees the bad one.
+            if name == "call_discoverable_agent_tool" and isinstance(args, dict):
+                target_tool = args.get("agent_tool_name") or ""
+                inner_str = args.get("arguments")
+                if target_tool and isinstance(inner_str, str) and inner_str:
+                    constraints = COMPASS.enum_constraints(target_tool) or {}
+                    if constraints:
+                        try:
+                            inner_kwargs = json.loads(inner_str)
+                        except Exception:
+                            inner_kwargs = None
+                        if isinstance(inner_kwargs, dict):
+                            violations: list[tuple[str, object, list[str]]] = []
+                            for pname, valid_values in constraints.items():
+                                if pname not in inner_kwargs:
+                                    continue
+                                actual = inner_kwargs[pname]
+                                if isinstance(actual, str) and actual not in valid_values:
+                                    violations.append((pname, actual, valid_values))
+                            if violations:
+                                log.append({
+                                    "turn": turn,
+                                    "reason": "blocked_enum_violation",
+                                    "target": target_tool,
+                                    "violations": [
+                                        {"param": p, "got": g, "valid": v}
+                                        for (p, g, v) in violations
+                                    ],
+                                })
+                                detail_parts = []
+                                for pname, got, valid in violations:
+                                    valid_str = ", ".join(repr(v) for v in valid)
+                                    detail_parts.append(
+                                        f"parameter '{pname}' must be one of "
+                                        f"[{valid_str}] but I tried {got!r}"
+                                    )
+                                drop_notes.append(
+                                    f"I dropped that call_discoverable_agent_tool({target_tool}, ...) "
+                                    f"because the arguments failed enum validation: "
+                                    + "; ".join(detail_parts)
+                                    + f". Retry with a value from the valid list above — "
+                                    f"the action matcher scores the FIRST call attempt, so "
+                                    f"getting it right on retry does not recover the task."
+                                )
+                                continue
+
             # Intervention E (Commit 1): Phase-2 guard.
             # If the agent is about to call an agent-side mutation that pairs
             # with a still-pending user-side tool, block it. "Pairs" means:

@@ -17,6 +17,8 @@ traces/
 eval_banking_knowledge/
 tau2-bench/
 run_full*.log
+run_lite*.log
+run_*.log
 
 # Hive workspace state
 .hive/

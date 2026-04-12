@@ -645,6 +645,7 @@ def parse_response(choice):
 
 MAX_RETRIES = 3
 LOOP_BREAK_LIMIT = 5  # Force text response after N consecutive tool calls to break search loops
+PHASE2_ESCAPE_TURNS = 6  # After this many turns since give_discoverable_user_tool, unblock Phase-2 guard
 
 
 class BankingAgentState:
@@ -804,6 +805,7 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
                     target = args.get("discoverable_tool_name") or args.get("tool_name")
                     if target:
                         self._task_state["unlocked_for_user"].add(target)
+                        self._task_state.setdefault("give_turn", {})[target] = self._task_state["turn_count"]
                 elif tc.name in ("KB_search", "kb_search", "search_knowledge_base"):
                     self._task_state["kb_search_count"] += 1
                 elif tc.name == "get_user_information_by_id":
@@ -1150,11 +1152,32 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
             if name == "call_discoverable_agent_tool" and isinstance(args, dict):
                 target_tool = args.get("agent_tool_name") or ""
                 user_calls = self._task_state.get("user_calls_by_tool", {})
+                give_turns = self._task_state.get("give_turn", {})
                 blocked = False
                 for given_tool, agent_prefixes in phase2_pairs.items():
                     if given_tool not in unlocked_user:
                         continue
                     if any(target_tool.startswith(p) for p in agent_prefixes):
+                        # Escape hatch: if we gave the tool more than
+                        # PHASE2_ESCAPE_TURNS ago and the guard is still
+                        # blocking, let it through. The customer has had ample
+                        # time, and the user_calls counter may be stuck at 0
+                        # because the agent never sees the customer's tool
+                        # result as a ToolMessage (it arrives as part of the
+                        # user simulator's turn). Without this escape, the
+                        # guard creates a 200-turn infinite loop (task_027,
+                        # task_028, task_043, task_044, task_080, task_084).
+                        gave_at = give_turns.get(given_tool, turn)
+                        turns_since_give = turn - gave_at
+                        if turns_since_give > PHASE2_ESCAPE_TURNS:
+                            log.append({
+                                "turn": turn,
+                                "reason": "phase2_escape_hatch",
+                                "target": target_tool,
+                                "given_tool": given_tool,
+                                "turns_since_give": turns_since_give,
+                            })
+                            break
                         if user_calls.get(given_tool, 0) == 0:
                             log.append({
                                 "turn": turn,

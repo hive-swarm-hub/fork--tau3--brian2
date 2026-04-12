@@ -497,7 +497,7 @@ def test_gate_phase2_guard_blocks_premature_cleanup():
     interventions = agent._task_state["gate_interventions"]
     # Only the phase2 block should fire (canonicalization is a no-op since
     # we already passed canonical form)
-    phase2_blocks = [i for i in interventions if i.get("reason") == "blocked_phase2_insufficient_user_calls"]
+    phase2_blocks = [i for i in interventions if i.get("reason") == "blocked_phase2_before_user_call"]
     assert_eq(len(phase2_blocks), 1, "exactly one phase2 block intervention")
 
 
@@ -516,84 +516,6 @@ def test_gate_phase2_guard_allows_after_user_call():
     ])
     out = agent._gate_tool_calls(msg)
     assert_eq(len(out.tool_calls or []), 1, "cleanup passes when user has called the tool")
-
-
-def test_gate_phase2_guard_blocks_partial_dispute_submissions():
-    section("test_gate_phase2_guard_blocks_partial_dispute_submissions — task_026 derail")
-    agent = create_custom_agent(tools=[], domain_policy="test")
-    agent._task_state["unlocked_for_user"].add("submit_cash_back_dispute_0589")
-    agent._task_state["unlocked_for_agent"].add("update_transaction_rewards_3847")
-    agent._task_state["current_user_id"] = "u_026"
-    # Calculator found 4 dispute candidates, customer has only submitted 1.
-    # Old guard passed this through at >=1; new guard requires >= min(4,4).
-    agent._task_state["dispute_candidates_by_user"] = {
-        "u_026": [
-            {"transaction_id": f"txn_{i}", "credit_card_type": "X", "category": "Y",
-             "transaction_amount": 100.0, "actual_points": 0, "expected_points": 5,
-             "drift": -5, "expected_rate_pct": 5.0}
-            for i in range(4)
-        ]
-    }
-    agent._task_state["user_calls_by_tool"]["submit_cash_back_dispute_0589"] = 1
-    msg = AssistantMessage(role="assistant", content="", tool_calls=[
-        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
-            "agent_tool_name": "update_transaction_rewards_3847",
-            "arguments": '{"new_rewards_earned":"50","transaction_id":"txn_0"}',
-        }),
-    ])
-    out = agent._gate_tool_calls(msg)
-    assert_eq(out.tool_calls, None, "cleanup blocked while disputes incomplete")
-    interventions = agent._task_state["gate_interventions"]
-    phase2_blocks = [i for i in interventions if i.get("reason") == "blocked_phase2_insufficient_user_calls"]
-    assert_eq(len(phase2_blocks), 1, "exactly one insufficient-user-calls block")
-    assert_eq(phase2_blocks[0]["actual"], 1, "actual user calls = 1")
-    assert_eq(phase2_blocks[0]["required"], 4, "required = 4 (candidate count)")
-
-
-def test_gate_phase2_guard_unblocks_after_enough_dispute_submissions():
-    section("test_gate_phase2_guard_unblocks_after_enough_dispute_submissions")
-    agent = create_custom_agent(tools=[], domain_policy="test")
-    agent._task_state["unlocked_for_user"].add("submit_cash_back_dispute_0589")
-    agent._task_state["unlocked_for_agent"].add("update_transaction_rewards_3847")
-    agent._task_state["current_user_id"] = "u_026"
-    agent._task_state["dispute_candidates_by_user"] = {
-        "u_026": [{"transaction_id": f"txn_{i}", "credit_card_type": "X", "category": "Y",
-                   "transaction_amount": 100.0, "actual_points": 0, "expected_points": 5,
-                   "drift": -5, "expected_rate_pct": 5.0} for i in range(4)]
-    }
-    agent._task_state["user_calls_by_tool"]["submit_cash_back_dispute_0589"] = 4
-    msg = AssistantMessage(role="assistant", content="", tool_calls=[
-        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
-            "agent_tool_name": "update_transaction_rewards_3847",
-            "arguments": '{"new_rewards_earned":"50","transaction_id":"txn_0"}',
-        }),
-    ])
-    out = agent._gate_tool_calls(msg)
-    assert_eq(len(out.tool_calls or []), 1, "cleanup allowed after all disputes submitted")
-
-
-def test_gate_phase2_guard_caps_at_4_to_avoid_infinite_loop():
-    section("test_gate_phase2_guard_caps_at_4_to_avoid_infinite_loop")
-    agent = create_custom_agent(tools=[], domain_policy="test")
-    agent._task_state["unlocked_for_user"].add("submit_cash_back_dispute_0589")
-    agent._task_state["unlocked_for_agent"].add("update_transaction_rewards_3847")
-    agent._task_state["current_user_id"] = "u_big"
-    # Calculator over-counts (12 candidates, but oracle probably ~4-6).
-    # Cap at 4 so the agent can progress once customer submits 4+.
-    agent._task_state["dispute_candidates_by_user"] = {
-        "u_big": [{"transaction_id": f"txn_{i}", "credit_card_type": "X", "category": "Y",
-                   "transaction_amount": 100.0, "actual_points": 0, "expected_points": 5,
-                   "drift": -5, "expected_rate_pct": 5.0} for i in range(12)]
-    }
-    agent._task_state["user_calls_by_tool"]["submit_cash_back_dispute_0589"] = 4
-    msg = AssistantMessage(role="assistant", content="", tool_calls=[
-        ToolCall(id="1", name="call_discoverable_agent_tool", arguments={
-            "agent_tool_name": "update_transaction_rewards_3847",
-            "arguments": '{"new_rewards_earned":"50","transaction_id":"txn_0"}',
-        }),
-    ])
-    out = agent._gate_tool_calls(msg)
-    assert_eq(len(out.tool_calls or []), 1, "cleanup allowed at cap of 4 even with 12 candidates")
 
 
 def test_gate_phase2_guard_no_pairing_no_block():

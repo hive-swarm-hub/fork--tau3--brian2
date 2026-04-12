@@ -938,54 +938,21 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
                 for given_tool, agent_prefixes in phase2_pairs.items():
                     if given_tool not in unlocked_user:
                         continue
-                    if not any(target_tool.startswith(p) for p in agent_prefixes):
-                        continue
-
-                    actual_user_calls = user_calls.get(given_tool, 0)
-
-                    # Phase D v2: for the dispute case, one user call isn't
-                    # enough. The customer-simulator derail (task_026) submits
-                    # 1 of N disputes, then asks the agent to update rewards
-                    # directly — and the old guard waved that through once
-                    # the counter hit 1. Require user_calls >= the number of
-                    # calculator-flagged candidates, capped at 4 so an
-                    # over-counting calculator can't create an infinite loop.
-                    if given_tool == "submit_cash_back_dispute_0589":
-                        uid = self._task_state.get("current_user_id")
-                        candidates = (
-                            (self._task_state.get("dispute_candidates_by_user") or {}).get(uid) or []
-                        )
-                        required = min(max(len(candidates), 1), 4)
-                    else:
-                        required = 1
-
-                    if actual_user_calls < required:
-                        log.append({
-                            "turn": turn,
-                            "reason": "blocked_phase2_insufficient_user_calls",
-                            "target": target_tool,
-                            "given_tool": given_tool,
-                            "actual": actual_user_calls,
-                            "required": required,
-                        })
-                        if given_tool == "submit_cash_back_dispute_0589":
-                            drop_notes.append(
-                                f"I will NOT update rewards directly. The customer has "
-                                f"submitted {actual_user_calls} of {required} expected "
-                                f"{given_tool} calls. Re-list the remaining transaction_ids "
-                                f"from the dispute target list and ask the customer to call "
-                                f"submit_cash_back_dispute_0589 for each one individually. "
-                                f"Only after all submissions land will any backend update "
-                                f"be considered."
-                            )
-                        else:
+                    if any(target_tool.startswith(p) for p in agent_prefixes):
+                        if user_calls.get(given_tool, 0) == 0:
+                            log.append({
+                                "turn": turn,
+                                "reason": "blocked_phase2_before_user_call",
+                                "target": target_tool,
+                                "given_tool": given_tool,
+                            })
                             drop_notes.append(
                                 f"I gave you the tool {given_tool} earlier — please call it "
                                 f"with the specific transaction details first. I will only "
                                 f"update the backend records after the customer has submitted."
                             )
-                        blocked = True
-                        break
+                            blocked = True
+                            break
                 if blocked:
                     continue
 

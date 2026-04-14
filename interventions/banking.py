@@ -245,9 +245,10 @@ def _apply_H_enum_prevalidation(ctx: HookContext) -> Optional[HookResult]:
     return HookResult(
         drop=True,
         drop_note=(
-            f"Blocked {target_tool}: {details}. "
-            f"Retry with a valid value — the action matcher scores "
-            f"the FIRST call attempt."
+            f"MANDATORY NEXT ACTION: {target_tool} call was BLOCKED: {details}. "
+            f"I MUST retry {target_tool} NOW with a valid value from the allowed "
+            f"list. The action matcher scores the FIRST call attempt, so I CANNOT "
+            f"stop and must retry immediately. DO NOT wait or escalate."
         ),
         log={
             "turn": ctx.state.get("turn_count", 0),
@@ -304,9 +305,12 @@ def _apply_E_phase2_guard(ctx: HookContext) -> Optional[HookResult]:
             return HookResult(
                 drop=True,
                 drop_note=(
-                    f"I gave you the tool {given_tool} earlier — please call it "
-                    f"with the specific transaction details first. I will only "
-                    f"update the backend records after the customer has submitted."
+                    f"MANDATORY NEXT ACTION: The cleanup call was BLOCKED because "
+                    f"the customer hasn't called {given_tool} yet. I MUST tell the "
+                    f"customer NOW which specific arguments (transaction IDs, etc.) "
+                    f"to use with {given_tool}, pulling the values from prior tool "
+                    f"results. DO NOT stop or retry the backend update — instruct "
+                    f"the customer immediately with a concrete invocation example."
                 ),
                 log={
                     "turn": ctx.state.get("turn_count", 0),
@@ -501,9 +505,11 @@ def _apply_J_transfer_reason_validation(ctx: HookContext) -> Optional[HookResult
     return HookResult(
         drop=True,
         drop_note=(
-            f"I tried to transfer with reason={reason!r} but that is not a valid "
-            f"transfer reason. Valid values are: [{valid_str}]. Pick the one that "
-            f"best describes this scenario and retry."
+            f"MANDATORY NEXT ACTION: The transfer call was BLOCKED because "
+            f"reason={reason!r} is not a valid transfer reason. Valid values: "
+            f"[{valid_str}]. I MUST retry transfer_to_human_agents NOW with one "
+            f"of the valid reason strings that best matches this scenario. DO NOT "
+            f"stop or wait — retry the transfer call immediately."
         ),
         log={
             "turn": ctx.state.get("turn_count", 0),
@@ -565,10 +571,12 @@ def _apply_K_account_class_kb_verify(ctx: HookContext) -> Optional[HookResult]:
     return HookResult(
         drop=True,
         drop_note=(
-            f"I'm about to open a {inner_kwargs.get('account_class', '')} account "
-            f"but I haven't verified this is the right class for this customer. "
-            f"I should search the KB for '{inner_kwargs.get('account_class', '')}' "
-            f"to confirm eligibility and features before calling."
+            f"MANDATORY NEXT ACTION: The open_bank_account_4821 call was BLOCKED "
+            f"because I haven't read the KB doc for "
+            f"'{inner_kwargs.get('account_class', '')}' yet. I MUST now call "
+            f"KB_search(query=\"{inner_kwargs.get('account_class', '')} eligibility features\") "
+            f"immediately. After reading the result, I WILL retry the "
+            f"open_bank_account_4821 call. DO NOT stop or wait — do the KB_search NOW."
         ),
         log={
             "turn": ctx.state.get("turn_count", 0),

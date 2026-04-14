@@ -245,10 +245,9 @@ def _apply_H_enum_prevalidation(ctx: HookContext) -> Optional[HookResult]:
     return HookResult(
         drop=True,
         drop_note=(
-            f"MANDATORY NEXT ACTION: {target_tool} call was BLOCKED: {details}. "
-            f"I MUST retry {target_tool} NOW with a valid value from the allowed "
-            f"list. The action matcher scores the FIRST call attempt, so I CANNOT "
-            f"stop and must retry immediately. DO NOT wait or escalate."
+            f"Blocked {target_tool}: {details}. "
+            f"Retry with a valid value — the action matcher scores "
+            f"the FIRST call attempt."
         ),
         log={
             "turn": ctx.state.get("turn_count", 0),
@@ -305,12 +304,9 @@ def _apply_E_phase2_guard(ctx: HookContext) -> Optional[HookResult]:
             return HookResult(
                 drop=True,
                 drop_note=(
-                    f"MANDATORY NEXT ACTION: The cleanup call was BLOCKED because "
-                    f"the customer hasn't called {given_tool} yet. I MUST tell the "
-                    f"customer NOW which specific arguments (transaction IDs, etc.) "
-                    f"to use with {given_tool}, pulling the values from prior tool "
-                    f"results. DO NOT stop or retry the backend update — instruct "
-                    f"the customer immediately with a concrete invocation example."
+                    f"I gave you the tool {given_tool} earlier — please call it "
+                    f"with the specific transaction details first. I will only "
+                    f"update the backend records after the customer has submitted."
                 ),
                 log={
                     "turn": ctx.state.get("turn_count", 0),
@@ -505,11 +501,9 @@ def _apply_J_transfer_reason_validation(ctx: HookContext) -> Optional[HookResult
     return HookResult(
         drop=True,
         drop_note=(
-            f"MANDATORY NEXT ACTION: The transfer call was BLOCKED because "
-            f"reason={reason!r} is not a valid transfer reason. Valid values: "
-            f"[{valid_str}]. I MUST retry transfer_to_human_agents NOW with one "
-            f"of the valid reason strings that best matches this scenario. DO NOT "
-            f"stop or wait — retry the transfer call immediately."
+            f"I tried to transfer with reason={reason!r} but that is not a valid "
+            f"transfer reason. Valid values are: [{valid_str}]. Pick the one that "
+            f"best describes this scenario and retry."
         ),
         log={
             "turn": ctx.state.get("turn_count", 0),

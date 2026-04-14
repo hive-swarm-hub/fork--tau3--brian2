@@ -1091,11 +1091,10 @@ class CustomAgent(HalfDuplexAgent[BankingAgentState]):
                     role="assistant",
                     content=(
                         assistant_msg.content
-                        + " [MANDATORY NEXT ACTION: I just repeated the exact same "
-                        "waiting response. I MUST NOW take a tool action — look up "
-                        "the customer's info with get_user_information_*, search the "
-                        "KB for the next step, or call a discoverable tool. DO NOT "
-                        "repeat this acknowledgment again. Take a tool action NOW.]"
+                        + " [SYSTEM: I noticed I just repeated this exact response. "
+                        "I should NOT wait passively — I should look up the customer's "
+                        "info myself with the tools available, or end the conversation "
+                        "if the task is complete.]"
                     ),
                     tool_calls=None,
                 )
